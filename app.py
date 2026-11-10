@@ -1,25 +1,33 @@
-
 import streamlit as st
 from streamlit_cropper import st_cropper
 import tensorflow as tf
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pathlib import Path
+from io import BytesIO
+from datetime import datetime
+import hashlib
 
 BASE = Path(__file__).parent
 MODEL = BASE / "assets" / "model.tflite"
 LABELS = BASE / "assets" / "labels.txt"
 
-st.set_page_config(page_title="LiveDetection", page_icon="🔬")
+st.set_page_config(
+    page_title="LiveDetection",
+    page_icon=str(BASE / "livedetection_icon.png"),
+)
 
+st.image(str(BASE / "livedetection_icon.png"), width=180)
 st.title("🔬 LiveDetection")
 st.write("Desmiden-Erkennung – Top 3 Arten")
+
 
 @st.cache_resource
 def load_model():
     interpreter = tf.lite.Interpreter(model_path=str(MODEL))
     interpreter.allocate_tensors()
     return interpreter
+
 
 @st.cache_data
 def load_labels():
@@ -28,6 +36,7 @@ def load_labels():
         for line in LABELS.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
 
 def recognize(image):
     interpreter = load_model()
@@ -52,20 +61,138 @@ def recognize(image):
         raise ValueError("Klassenliste und Modell passen nicht zusammen.")
 
     top_indices = np.argsort(scores)[::-1][:3]
-
     return [(labels[i], float(scores[i])) for i in top_indices]
+
+
+def create_result_image(original_image, results):
+    original_image = original_image.convert("RGB")
+
+    width = 1400
+    margin = 65
+    photo = ImageOps.contain(
+        original_image,
+        (width - 2 * margin, 950),
+    )
+
+    header_height = 180
+    footer_height = 390
+    height = header_height + photo.height + footer_height
+
+    canvas = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    try:
+        font_bold = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48
+        )
+        font_regular = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 35
+        )
+        font_small = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 25
+        )
+    except OSError:
+        font_bold = ImageFont.load_default()
+        font_regular = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+
+    draw.rectangle((0, 0, width, header_height), fill="#174D35")
+    draw.text(
+        (margin, 45),
+        "LiveDetection",
+        fill="white",
+        font=font_bold,
+    )
+    draw.text(
+        (margin, 110),
+        "Erkennungsergebnis – Top 3",
+        fill="white",
+        font=font_regular,
+    )
+
+    photo_x = (width - photo.width) // 2
+    photo_y = header_height
+    canvas.paste(photo, (photo_x, photo_y))
+
+    y = photo_y + photo.height + 35
+    draw.text(
+        (margin, y),
+        "Erkannte Arten",
+        fill="#174D35",
+        font=font_bold,
+    )
+
+    y += 85
+    for index, (name, score) in enumerate(results, start=1):
+        draw.text(
+            (margin, y),
+            f"{index}.  {name}",
+            fill="#222222",
+            font=font_regular,
+        )
+        draw.text(
+            (width - margin - 230, y),
+            f"{score * 100:.1f} %",
+            fill="#174D35",
+            font=font_regular,
+        )
+        y += 75
+
+    y += 15
+    timestamp = datetime.now().strftime("%d.%m.%Y – %H:%M Uhr")
+    draw.text(
+        (margin, y),
+        f"Aufnahme: {timestamp}",
+        fill="#666666",
+        font=font_small,
+    )
+    draw.text(
+        (margin, y + 45),
+        "KI-Modellwerte sind keine gesicherte Artbestimmung.",
+        fill="#666666",
+        font=font_small,
+    )
+
+    output = BytesIO()
+    canvas.save(output, format="JPEG", quality=95)
+    return output.getvalue()
+
 
 aufnahme = st.camera_input("Mikroskopfoto aufnehmen")
 
 galerie = st.file_uploader(
     "Oder Foto aus der Galerie auswählen",
-    type=["jpg", "jpeg", "png"]
+    type=["jpg", "jpeg", "png"],
 )
 
 photo = aufnahme if aufnahme is not None else galerie
 
 if photo is not None:
-    image = Image.open(photo).convert("RGB")
+    original_bytes = photo.getvalue()
+    photo_id = hashlib.sha256(original_bytes).hexdigest()
+
+    if st.session_state.get("photo_id") != photo_id:
+        st.session_state["photo_id"] = photo_id
+        st.session_state.pop("results", None)
+        st.session_state.pop("result_image", None)
+        st.session_state.pop("result_photo_id", None)
+
+    image = Image.open(BytesIO(original_bytes)).convert("RGB")
+
+    st.subheader("Originalfoto")
+    st.image(image, width=350)
+
+    suffix = Path(getattr(photo, "name", "Mikroskopfoto.jpg")).suffix.lower()
+    if suffix not in [".jpg", ".jpeg", ".png"]:
+        suffix = ".jpg"
+
+    st.download_button(
+        "📷 Originalfoto auf iPhone speichern",
+        data=original_bytes,
+        file_name=f"LiveDetection_Original{suffix}",
+        mime="image/png" if suffix == ".png" else "image/jpeg",
+        key="download_original",
+    )
 
     st.subheader("Bildausschnitt auswählen")
     st.write(
@@ -91,14 +218,34 @@ if photo is not None:
     if st.button("Desmide erkennen", type="primary"):
         try:
             results = recognize(cropped_image)
-
-            st.subheader("Top 3 Erkennung")
-
-            for name, score in results:
-                st.write(f"**{name}** – {score * 100:.1f} %")
-
-            st.caption(
-                "KI-Modellwerte sind keine gesicherte Artbestimmung."
+            st.session_state["results"] = results
+            st.session_state["result_image"] = create_result_image(
+                image, results
             )
+            st.session_state["result_photo_id"] = photo_id
         except Exception as error:
             st.error(f"Erkennung fehlgeschlagen: {error}")
+
+    if st.session_state.get("result_photo_id") == photo_id:
+        results = st.session_state["results"]
+
+        st.subheader("Top 3 Erkennung")
+        for name, score in results:
+            st.write(f"**{name}** – {score * 100:.1f} %")
+
+        st.caption(
+            "KI-Modellwerte sind keine gesicherte Artbestimmung."
+        )
+
+        st.subheader("Ergebnisbild")
+        result_bytes = st.session_state["result_image"]
+
+        st.image(result_bytes, use_container_width=True)
+
+        st.download_button(
+            "🧪 Ergebnisbild mit Top 3 auf iPhone speichern",
+            data=result_bytes,
+            file_name="LiveDetection_Ergebnis_Top3.jpg",
+            mime="image/jpeg",
+            key="download_result",
+        )
