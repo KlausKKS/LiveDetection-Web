@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_cropper import st_cropper
 import tensorflow as tf
 import numpy as np
@@ -8,6 +9,7 @@ from io import BytesIO
 from datetime import datetime
 import hashlib
 import base64
+import html
 
 BASE = Path(__file__).parent
 MODEL = BASE / "assets" / "model.tflite"
@@ -18,7 +20,6 @@ st.set_page_config(
     page_icon=str(BASE / "livedetection_icon.png"),
 )
 
-# Versionsnummer für die Aufnahme-Widgets.
 if "input_epoch" not in st.session_state:
     st.session_state["input_epoch"] = 0
 
@@ -48,11 +49,9 @@ def load_labels():
 def recognize(image):
     interpreter = load_model()
     labels = load_labels()
-
     image = image.convert("RGB")
     image = image.resize((224, 224), Image.Resampling.BOX)
 
-    # MobileNetV3-Vorverarbeitung ist im Modell enthalten.
     input_data = np.asarray(image, dtype=np.float32)
     input_data = np.expand_dims(input_data, axis=0)
 
@@ -79,7 +78,6 @@ def image_to_jpeg(image):
 
 def create_result_image(cropped_image, results):
     cropped_image = cropped_image.convert("RGB")
-
     width = 1400
     margin = 65
     photo = cropped_image.copy()
@@ -108,12 +106,7 @@ def create_result_image(cropped_image, results):
         font_small = ImageFont.load_default()
 
     draw.rectangle((0, 0, width, header_height), fill="#174D35")
-    draw.text(
-        (margin, 45),
-        "LiveDetection",
-        fill="white",
-        font=font_bold,
-    )
+    draw.text((margin, 45), "LiveDetection", fill="white", font=font_bold)
     draw.text(
         (margin, 110),
         "Erkennungsergebnis – Top 3",
@@ -126,12 +119,7 @@ def create_result_image(cropped_image, results):
     canvas.paste(photo, (photo_x, photo_y))
 
     y = photo_y + photo.height + 35
-    draw.text(
-        (margin, y),
-        "Erkannte Arten",
-        fill="#174D35",
-        font=font_bold,
-    )
+    draw.text((margin, y), "Erkannte Arten", fill="#174D35", font=font_bold)
 
     y += 85
     for index, (name, score) in enumerate(results, start=1):
@@ -151,7 +139,6 @@ def create_result_image(cropped_image, results):
 
     y += 15
     timestamp = datetime.now().strftime("%d.%m.%Y – %H:%M Uhr")
-
     draw.text(
         (margin, y),
         f"Aufnahme: {timestamp}",
@@ -205,75 +192,13 @@ if photo is not None:
     if suffix not in [".jpg", ".jpeg", ".png"]:
         suffix = ".jpg"
 
-    # Teilen über das native iPhone-Teilen-Menü
-image_base64 = base64.b64encode(cropped_bytes).decode("ascii")
-
-share_html = """
-<button id="share-crop"
-style="
-    background:#174D35;
-    color:white;
-    border:0;
-    border-radius:8px;
-    padding:12px 18px;
-    font-size:16px;
-    width:100%;
-    cursor:pointer;">
-    📲 Zuschnitt teilen / in Fotos sichern
-</button>
-<p id="share-status" style="font-size:13px;"></p>
-
-<script>
-const imageData = "__IMAGE_DATA__";
-
-document.getElementById("share-crop").addEventListener("click", async () => {
-    const status = document.getElementById("share-status");
-
-    try {
-        const binary = atob(imageData);
-        const bytes = new Uint8Array(binary.length);
-
-        for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-        }
-
-        const file = new File(
-            [bytes],
-            "LiveDetection_Zuschnitt.jpg",
-            {type: "image/jpeg"}
-        );
-
-        if (navigator.canShare && navigator.canShare({files: [file]})) {
-            await navigator.share({
-                files: [file],
-                title: "LiveDetection Bildausschnitt"
-            });
-            status.textContent = "Teilen-Menü geöffnet.";
-        } else {
-            status.textContent =
-                "Teilen nicht unterstützt. Bitte den Download darunter verwenden.";
-        }
-    } catch (error) {
-        if (error.name !== "AbortError") {
-            status.textContent = "Teilen nicht möglich. Bitte Download verwenden.";
-        }
-    }
-});
-</script>
-"""
-
-share_html = share_html.replace("__IMAGE_DATA__", image_base64)
-
-st.html(share_html, unsafe_allow_javascript=True)
-
-# Bisheriger Download bleibt als Rückfallebene
-st.download_button(
-    "⬇️ Zuschnitt herunterladen",
-    data=cropped_bytes,
-    file_name="LiveDetection_Zuschnitt.jpg",
-    mime="image/jpeg",
-    key=f"download_crop_{epoch}",
-)
+    st.download_button(
+        "📷 Originalfoto speichern",
+        data=original_bytes,
+        file_name=f"LiveDetection_Original{suffix}",
+        mime="image/png" if suffix == ".png" else "image/jpeg",
+        key=f"download_original_{epoch}",
+    )
 
     st.subheader("Bildausschnitt auswählen")
     st.write(
@@ -300,12 +225,67 @@ st.download_button(
     crop_id = hashlib.sha256(cropped_bytes).hexdigest()
 
     st.download_button(
-        "✂️ Zugeschnittenes Bild auf iPhone speichern",
+        "⬇️ Zuschnitt herunterladen",
         data=cropped_bytes,
         file_name="LiveDetection_Zuschnitt.jpg",
         mime="image/jpeg",
         key=f"download_crop_{epoch}",
     )
+
+    # Native Teilen-Funktion, sofern der Browser sie unterstützt.
+    image_base64 = base64.b64encode(cropped_bytes).decode("ascii")
+
+    share_html = """
+    <button id="share-crop" style="
+        background:#174D35;color:white;border:0;
+        border-radius:8px;padding:12px 18px;
+        font-size:16px;width:100%;cursor:pointer;">
+        📲 Zuschnitt teilen / in Fotos sichern
+    </button>
+    <p id="share-status" style="font-size:13px;"></p>
+    <script>
+    const imageData = "__IMAGE_DATA__";
+    const button = document.getElementById("share-crop");
+    const status = document.getElementById("share-status");
+
+    button.addEventListener("click", async () => {
+        try {
+            const binary = atob(imageData);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+
+            const file = new File(
+                [bytes],
+                "LiveDetection_Zuschnitt.jpg",
+                {type: "image/jpeg"}
+            );
+
+            if (navigator.share && navigator.canShare &&
+                navigator.canShare({files: [file]})) {
+                await navigator.share({
+                    files: [file],
+                    title: "LiveDetection Bildausschnitt"
+                });
+                status.textContent = "Teilen-Menü geöffnet.";
+            } else {
+                status.textContent =
+                    "Teilen nicht unterstützt. Bitte Download verwenden.";
+            }
+        } catch (error) {
+            if (error.name !== "AbortError") {
+                status.textContent =
+                    "Teilen nicht möglich. Bitte Download verwenden.";
+            }
+        }
+    });
+    </script>
+    """
+
+    share_html = share_html.replace("__IMAGE_DATA__", image_base64)
+
+    components.html(share_html, height=85)
 
     if st.button(
         "Desmide erkennen",
@@ -314,13 +294,11 @@ st.download_button(
     ):
         try:
             results = recognize(cropped_image)
-
             st.session_state["results"] = results
             st.session_state["result_image"] = create_result_image(
                 cropped_image, results
             )
             st.session_state["result_crop_id"] = crop_id
-
         except Exception as error:
             st.error(f"Erkennung fehlgeschlagen: {error}")
 
@@ -331,7 +309,6 @@ st.download_button(
         results = st.session_state["results"]
 
         st.subheader("Top 3 Erkennung")
-
         for name, score in results:
             st.write(f"**{name}** – {score * 100:.1f} %")
 
@@ -340,13 +317,11 @@ st.download_button(
         )
 
         st.subheader("Ergebnisbild mit Bildausschnitt und Top 3")
-
         result_bytes = st.session_state["result_image"]
-
         st.image(result_bytes, use_container_width=True)
 
         st.download_button(
-            "🧪 Ergebnisbild mit Top 3 auf iPhone speichern",
+            "🧪 Ergebnisbild mit Top 3 speichern",
             data=result_bytes,
             file_name="LiveDetection_Ergebnis_Top3.jpg",
             mime="image/jpeg",
@@ -361,8 +336,11 @@ st.download_button(
         use_container_width=True,
     ):
         st.session_state["input_epoch"] += 1
-        st.session_state.pop("photo_id", None)
-        st.session_state.pop("results", None)
-        st.session_state.pop("result_image", None)
-        st.session_state.pop("result_crop_id", None)
+        for key in (
+            "photo_id",
+            "results",
+            "result_image",
+            "result_crop_id",
+        ):
+            st.session_state.pop(key, None)
         st.rerun()
