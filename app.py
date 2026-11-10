@@ -7,6 +7,7 @@ from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 import hashlib
+import base64
 
 BASE = Path(__file__).parent
 MODEL = BASE / "assets" / "model.tflite"
@@ -204,13 +205,75 @@ if photo is not None:
     if suffix not in [".jpg", ".jpeg", ".png"]:
         suffix = ".jpg"
 
-    st.download_button(
-        "📷 Originalfoto auf iPhone speichern",
-        data=original_bytes,
-        file_name=f"LiveDetection_Original{suffix}",
-        mime="image/png" if suffix == ".png" else "image/jpeg",
-        key=f"download_original_{epoch}",
-    )
+    # Teilen über das native iPhone-Teilen-Menü
+image_base64 = base64.b64encode(cropped_bytes).decode("ascii")
+
+share_html = """
+<button id="share-crop"
+style="
+    background:#174D35;
+    color:white;
+    border:0;
+    border-radius:8px;
+    padding:12px 18px;
+    font-size:16px;
+    width:100%;
+    cursor:pointer;">
+    📲 Zuschnitt teilen / in Fotos sichern
+</button>
+<p id="share-status" style="font-size:13px;"></p>
+
+<script>
+const imageData = "__IMAGE_DATA__";
+
+document.getElementById("share-crop").addEventListener("click", async () => {
+    const status = document.getElementById("share-status");
+
+    try {
+        const binary = atob(imageData);
+        const bytes = new Uint8Array(binary.length);
+
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+
+        const file = new File(
+            [bytes],
+            "LiveDetection_Zuschnitt.jpg",
+            {type: "image/jpeg"}
+        );
+
+        if (navigator.canShare && navigator.canShare({files: [file]})) {
+            await navigator.share({
+                files: [file],
+                title: "LiveDetection Bildausschnitt"
+            });
+            status.textContent = "Teilen-Menü geöffnet.";
+        } else {
+            status.textContent =
+                "Teilen nicht unterstützt. Bitte den Download darunter verwenden.";
+        }
+    } catch (error) {
+        if (error.name !== "AbortError") {
+            status.textContent = "Teilen nicht möglich. Bitte Download verwenden.";
+        }
+    }
+});
+</script>
+"""
+
+share_html = share_html.replace("__IMAGE_DATA__", image_base64)
+
+st.html(share_html, unsafe_allow_javascript=True)
+
+# Bisheriger Download bleibt als Rückfallebene
+st.download_button(
+    "⬇️ Zuschnitt herunterladen",
+    data=cropped_bytes,
+    file_name="LiveDetection_Zuschnitt.jpg",
+    mime="image/jpeg",
+    key=f"download_crop_{epoch}",
+)
 
     st.subheader("Bildausschnitt auswählen")
     st.write(
