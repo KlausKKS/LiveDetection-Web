@@ -2,7 +2,7 @@ import streamlit as st
 from streamlit_cropper import st_cropper
 import tensorflow as tf
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
@@ -16,6 +16,12 @@ st.set_page_config(
     page_title="LiveDetection",
     page_icon=str(BASE / "livedetection_icon.png"),
 )
+
+# Versionsnummer für die Aufnahme-Widgets.
+if "input_epoch" not in st.session_state:
+    st.session_state["input_epoch"] = 0
+
+epoch = st.session_state["input_epoch"]
 
 st.image(str(BASE / "livedetection_icon.png"), width=180)
 st.title("🔬 LiveDetection")
@@ -64,15 +70,19 @@ def recognize(image):
     return [(labels[i], float(scores[i])) for i in top_indices]
 
 
-def create_result_image(original_image, results):
-    original_image = original_image.convert("RGB")
+def image_to_jpeg(image):
+    output = BytesIO()
+    image.convert("RGB").save(output, format="JPEG", quality=95)
+    return output.getvalue()
+
+
+def create_result_image(cropped_image, results):
+    cropped_image = cropped_image.convert("RGB")
 
     width = 1400
     margin = 65
-    photo = ImageOps.contain(
-        original_image,
-        (width - 2 * margin, 950),
-    )
+    photo = cropped_image.copy()
+    photo.thumbnail((width - 2 * margin, 950))
 
     header_height = 180
     footer_height = 390
@@ -140,6 +150,7 @@ def create_result_image(original_image, results):
 
     y += 15
     timestamp = datetime.now().strftime("%d.%m.%Y – %H:%M Uhr")
+
     draw.text(
         (margin, y),
         f"Aufnahme: {timestamp}",
@@ -158,11 +169,15 @@ def create_result_image(original_image, results):
     return output.getvalue()
 
 
-aufnahme = st.camera_input("Mikroskopfoto aufnehmen")
+aufnahme = st.camera_input(
+    "Mikroskopfoto aufnehmen",
+    key=f"camera_{epoch}",
+)
 
 galerie = st.file_uploader(
     "Oder Foto aus der Galerie auswählen",
     type=["jpg", "jpeg", "png"],
+    key=f"upload_{epoch}",
 )
 
 photo = aufnahme if aufnahme is not None else galerie
@@ -175,14 +190,17 @@ if photo is not None:
         st.session_state["photo_id"] = photo_id
         st.session_state.pop("results", None)
         st.session_state.pop("result_image", None)
-        st.session_state.pop("result_photo_id", None)
+        st.session_state.pop("result_crop_id", None)
 
     image = Image.open(BytesIO(original_bytes)).convert("RGB")
 
     st.subheader("Originalfoto")
     st.image(image, width=350)
 
-    suffix = Path(getattr(photo, "name", "Mikroskopfoto.jpg")).suffix.lower()
+    suffix = Path(
+        getattr(photo, "name", "Mikroskopfoto.jpg")
+    ).suffix.lower()
+
     if suffix not in [".jpg", ".jpeg", ".png"]:
         suffix = ".jpg"
 
@@ -191,7 +209,7 @@ if photo is not None:
         data=original_bytes,
         file_name=f"LiveDetection_Original{suffix}",
         mime="image/png" if suffix == ".png" else "image/jpeg",
-        key="download_original",
+        key=f"download_original_{epoch}",
     )
 
     st.subheader("Bildausschnitt auswählen")
@@ -206,7 +224,7 @@ if photo is not None:
         box_color="#00FF00",
         aspect_ratio=(1, 1),
         return_type="image",
-        key="desmiden_cropper",
+        key=f"desmiden_cropper_{epoch}",
     )
 
     st.image(
@@ -215,21 +233,42 @@ if photo is not None:
         width=250,
     )
 
-    if st.button("Desmide erkennen", type="primary"):
+    cropped_bytes = image_to_jpeg(cropped_image)
+    crop_id = hashlib.sha256(cropped_bytes).hexdigest()
+
+    st.download_button(
+        "✂️ Zugeschnittenes Bild auf iPhone speichern",
+        data=cropped_bytes,
+        file_name="LiveDetection_Zuschnitt.jpg",
+        mime="image/jpeg",
+        key=f"download_crop_{epoch}",
+    )
+
+    if st.button(
+        "Desmide erkennen",
+        type="primary",
+        key=f"recognize_{epoch}",
+    ):
         try:
             results = recognize(cropped_image)
+
             st.session_state["results"] = results
             st.session_state["result_image"] = create_result_image(
-                image, results
+                cropped_image, results
             )
-            st.session_state["result_photo_id"] = photo_id
+            st.session_state["result_crop_id"] = crop_id
+
         except Exception as error:
             st.error(f"Erkennung fehlgeschlagen: {error}")
 
-    if st.session_state.get("result_photo_id") == photo_id:
+    if (
+        st.session_state.get("result_crop_id") == crop_id
+        and "results" in st.session_state
+    ):
         results = st.session_state["results"]
 
         st.subheader("Top 3 Erkennung")
+
         for name, score in results:
             st.write(f"**{name}** – {score * 100:.1f} %")
 
@@ -237,7 +276,8 @@ if photo is not None:
             "KI-Modellwerte sind keine gesicherte Artbestimmung."
         )
 
-        st.subheader("Ergebnisbild")
+        st.subheader("Ergebnisbild mit Bildausschnitt und Top 3")
+
         result_bytes = st.session_state["result_image"]
 
         st.image(result_bytes, use_container_width=True)
@@ -247,5 +287,19 @@ if photo is not None:
             data=result_bytes,
             file_name="LiveDetection_Ergebnis_Top3.jpg",
             mime="image/jpeg",
-            key="download_result",
+            key=f"download_result_{epoch}",
         )
+
+    st.divider()
+
+    if st.button(
+        "↩️ Beenden / Neue Aufnahme",
+        key=f"reset_{epoch}",
+        use_container_width=True,
+    ):
+        st.session_state["input_epoch"] += 1
+        st.session_state.pop("photo_id", None)
+        st.session_state.pop("results", None)
+        st.session_state.pop("result_image", None)
+        st.session_state.pop("result_crop_id", None)
+        st.rerun()
